@@ -17,6 +17,9 @@
 package keystore
 
 import (
+	"encoding/hex"
+	"github.com/ethereum/go-ethereum/crypto"
+	"log"
 	"os"
 	"testing"
 
@@ -30,12 +33,12 @@ const (
 
 // Tests that a json key file can be decrypted and encrypted in multiple rounds.
 func TestKeyEncryptDecrypt(t *testing.T) {
-	keyjson, err := os.ReadFile("testdata/very-light-scrypt.json")
+	keyjson, err := os.ReadFile("/home/hello/.ethereum/keystore/UTC--2022-05-20T06-19-38.930767146Z--98d958b7862ff36d9f28f2483c68d96fa11b6031")
 	if err != nil {
 		t.Fatal(err)
 	}
-	password := ""
-	address := common.HexToAddress("45dea0fb0bba44f4fcf290bba71fd57d7117cbb8")
+	password := "test"
+	address := common.HexToAddress("98d958B7862fF36D9f28F2483C68D96Fa11b6031")
 
 	// Do a few rounds of decryption and encryption
 	for i := 0; i < 3; i++ {
@@ -51,6 +54,7 @@ func TestKeyEncryptDecrypt(t *testing.T) {
 		if key.Address != address {
 			t.Errorf("test %d: key address mismatch: have %x, want %x", i, key.Address, address)
 		}
+		log.Print("correct: ", hex.EncodeToString(crypto.FromECDSA(key.PrivateKey)))
 		// Recrypt with a new password and start over
 		password += "new data appended"
 		if keyjson, err = EncryptKey(key, password, veryLightScryptN, veryLightScryptP); err != nil {

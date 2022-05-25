@@ -369,8 +369,11 @@ func (c *EthashConfig) String() string {
 
 // CliqueConfig is the consensus engine configs for proof-of-authority based sealing.
 type CliqueConfig struct {
-	Period uint64 `json:"period"` // Number of seconds between blocks to enforce
-	Epoch  uint64 `json:"epoch"`  // Epoch length to reset votes and checkpoint
+	Period            uint64           `json:"period"`            // Number of seconds between blocks to enforce
+	DNR               common.Address   `json:"dnr"`               // Ren Darknode Registry address on Ethereum
+	EpochBlock        uint64           `json:"epochBlock"`        // epoch block from where the dnr registry is monitored
+	API               string           `json:"api"`               // Ethereum RPC URL
+	InitialValidators []common.Address `json:"initialValidators"` // initial validators incase initialized from non-zero epoch
 }
 
 // String implements the stringer interface, returning the consensus engine details.
