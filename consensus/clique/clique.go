@@ -160,7 +160,7 @@ type Clique struct {
 
 	signer common.Address // Ethereum address of the signing key
 	signFn SignerFn       // Signer function to authorize hashes with
-	lock   sync.RWMutex   // Protects the signer fields
+	lock   sync.RWMutex   // Protects the signer and proposals fields
 
 	// The fields below are for testing only
 	fakeDiff bool // Skip difficulty verifications
@@ -493,7 +493,11 @@ func (c *Clique) Prepare(chain consensus.ChainHeaderReader, header *types.Header
 	}
 
 	// Set the correct difficulty
-	header.Difficulty = calcDifficulty(snap, number, c.signer)
+	c.lock.RLock()
+	// Copy signer protected by mutex to avoid race condition
+	signer := c.signer
+	c.lock.RUnlock()
+	header.Difficulty = calcDifficulty(snap, number, signer)
 
 	// Ensure the extra data has all its components
 	if len(header.Extra) < extraVanity {
@@ -654,7 +658,11 @@ func (c *Clique) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, 
 	if err != nil {
 		return nil
 	}
-	return calcDifficulty(snap, parent.Number.Uint64()+1, c.signer)
+	c.lock.RLock()
+	signer := c.signer
+	c.lock.RUnlock()
+
+	return calcDifficulty(snap, parent.Number.Uint64()+1, signer)
 }
 
 func calcDifficulty(snap *Snapshot, currentBlockNumber uint64, signer common.Address) *big.Int {
