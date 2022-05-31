@@ -1,9 +1,11 @@
-package dnr
+package clique
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
@@ -11,9 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 const BlockBuffer = 100
@@ -40,13 +40,13 @@ func NewDNR(config *params.CliqueConfig, db ethdb.Database) *DNR {
 		Validators:     validators,
 	}
 	dnr, err := GetLatestDNR(db)
-	if err != nil {
+	if err == nil {
 		dnr.config = config
-		log.Info("loaded latest dnr from disk", "last_epoch", dnr.LastEpochBlock)
+		log.Info("loaded latest dnr from disk", "last_epoch", dnr)
 		return dnr
 	}
 	log.Warn("failed to load latest dnr from disk, creating new drn entry with genesis data", "error", err)
-	if err = dnr.store(db); err != nil {
+	if err = defaultDNR.store(db); err != nil {
 		log.Warn("failed to store default epoch in db", "epoch_number", config.EpochBlock)
 	}
 	return defaultDNR
@@ -61,6 +61,9 @@ func (d *DNR) Watch(ctx context.Context, db ethdb.Database) {
 		panic(err)
 	}
 	lastBlock := d.LastEpochBlock
+
+	log.Warn("starting watch...", "existing_validators", d.Validators, "last_epoch", d.LastEpochBlock, "dnr_addr", d.config.DNR)
+
 	for {
 		startBlockNumber := new(big.Int).SetUint64(lastBlock + 1)
 		lastBlockNumber := new(big.Int).Add(startBlockNumber, big.NewInt(1000))
@@ -71,10 +74,11 @@ func (d *DNR) Watch(ctx context.Context, db ethdb.Database) {
 		}
 
 		// a 100 block delay to handle reorgs
-		latestBlockNum := new(big.Int).Sub(latestBlock.Number(), big.NewInt(100))
+		latestBlockNum := new(big.Int).Sub(latestBlock.Number(), big.NewInt(10))
 
 		if latestBlockNum.Cmp(startBlockNumber) < 0 {
 			// sleep for some time before retrying as no new block were created
+			log.Warn("waiting for more new blocks....", "latest_block", latestBlockNum.Uint64(), "start_block", startBlockNumber.Uint64())
 			time.Sleep(time.Minute)
 			continue
 		}
@@ -87,31 +91,33 @@ func (d *DNR) Watch(ctx context.Context, db ethdb.Database) {
 			FromBlock: startBlockNumber,
 			ToBlock:   lastBlockNumber,
 			Addresses: []common.Address{d.config.DNR},
-			Topics: [][]common.Hash{
-				{common.HexToHash(LogDarknodeRegistered)},
-				{common.HexToHash(LogDarknodeDeregistered)},
-				{common.HexToHash(LogNewEpoch)},
-			},
 		})
+
 		if err != nil {
+			log.Warn("[x] error syncing", "err", err)
 			panic(err)
 		}
 
 		for _, eventLog := range logs {
 			switch eventLog.Topics[0].Hex() {
 			case LogDarknodeRegistered:
+				log.Warn("queuing pending darknode registration....", "darknode", common.BytesToAddress(eventLog.Topics[2].Bytes()))
 				d.Validators[common.BytesToAddress(eventLog.Topics[2].Bytes())] = true
 			case LogDarknodeDeregistered:
 				if _, ok := d.Validators[common.BytesToAddress(eventLog.Topics[2].Bytes())]; ok {
+					log.Warn("queuing pending darknode de-registration....", "darknode", common.BytesToAddress(eventLog.Topics[2].Bytes()))
 					delete(d.Validators, common.BytesToAddress(eventLog.Topics[2].Bytes()))
 				}
 			case LogNewEpoch:
+				log.Warn("storing epoch event....", "epoch", eventLog.BlockNumber)
 				d.LastEpochBlock = eventLog.BlockNumber
 				if err = d.store(db); err != nil {
 					log.Warn("failed to store epoch in db", "epoch_number", eventLog.BlockNumber)
 				}
 			}
 		}
+
+		log.Warn("syncing eth events....", "latest_block", latestBlockNum.Uint64(), "synced_to", lastBlockNumber.Uint64())
 
 		// if caught up set synced to true
 		if latestBlockNum.Cmp(lastBlockNumber) == 0 {
@@ -121,6 +127,8 @@ func (d *DNR) Watch(ctx context.Context, db ethdb.Database) {
 		}
 
 		lastBlock = lastBlockNumber.Uint64()
+
+		time.Sleep(time.Minute)
 	}
 }
 
@@ -138,10 +146,14 @@ func (d *DNR) store(db ethdb.Database) error {
 func (d *DNR) WaitSynced() {
 	for {
 		d.syncLock.RLock()
-		if d.synced {
+		synced := d.synced
+		d.syncLock.RUnlock()
+
+		if synced {
 			return
 		}
-		d.syncLock.RUnlock()
+
+		log.Info("still syncing...")
 		time.Sleep(10 * time.Second)
 	}
 }
@@ -151,11 +163,11 @@ func GetLatestDNR(db ethdb.Database) (*DNR, error) {
 	if err != nil {
 		return nil, err
 	}
-	dnr := new(DNR)
-	if err := json.Unmarshal(blob, dnr); err != nil {
+	dnr := DNR{}
+	if err = json.Unmarshal(blob, &dnr); err != nil {
 		return nil, err
 	}
-	return dnr, nil
+	return &dnr, nil
 }
 
 func GetDNR(db ethdb.Database, epoch uint64) (*DNR, error) {
@@ -163,9 +175,9 @@ func GetDNR(db ethdb.Database, epoch uint64) (*DNR, error) {
 	if err != nil {
 		return nil, err
 	}
-	dnr := new(DNR)
-	if err := json.Unmarshal(blob, dnr); err != nil {
+	dnr := DNR{}
+	if err = json.Unmarshal(blob, &dnr); err != nil {
 		return nil, err
 	}
-	return dnr, nil
+	return &dnr, nil
 }

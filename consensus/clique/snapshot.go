@@ -19,8 +19,9 @@ package clique
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/consensus/clique/dnr"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
@@ -80,8 +81,8 @@ func newSnapshot(config *params.CliqueConfig, sigcache *lru.ARCCache, number, ep
 }
 
 // loadSnapshot loads an existing snapshot from the database.
-func loadSnapshot(config *params.CliqueConfig, sigcache *lru.ARCCache, db ethdb.Database, hash common.Hash) (*Snapshot, error) {
-	blob, err := db.Get(append([]byte("clique-"), hash[:]...))
+func loadSnapshot(config *params.CliqueConfig, sigcache *lru.ARCCache, db ethdb.Database, number uint64) (*Snapshot, error) {
+	blob, err := db.Get([]byte(fmt.Sprintf("clique-%v", number)))
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +102,7 @@ func (s *Snapshot) store(db ethdb.Database) error {
 	if err != nil {
 		return err
 	}
-	return db.Put(append([]byte("clique-"), s.Hash[:]...), blob)
+	return db.Put([]byte(fmt.Sprintf("clique-%v", s.Number)), blob)
 }
 
 // copy creates a deep copy of the snapshot, though not the individual votes.
@@ -126,20 +127,20 @@ func (s *Snapshot) copy() *Snapshot {
 }
 
 // signers retrieves the list of authorized signers in ascending order.
-func (s *Snapshot) validEpoch(epochNum uint64, validatorbytes []byte, db ethdb.Database) (bool, map[common.Address]bool) {
+func (s *Snapshot) validEpoch(epochNum uint64, validatorBytes []byte, db ethdb.Database) (bool, map[common.Address]bool) {
 	if s.EpochNumber >= epochNum {
 		log.Warn("ignored epoch as current epoch >= proposed", "proposed", epochNum, "current", s.EpochNumber)
 		return false, nil
 	}
-	dnr, err := dnr.GetDNR(db, epochNum)
+	dnr, err := GetDNR(db, epochNum)
 	if err != nil {
 		log.Warn("failed to get dnr snapshot for proposed epoch", "proposed", epochNum, "error", err.Error())
 		return false, nil
 	}
-	proposedCount := len(validatorbytes) / common.AddressLength
+	proposedCount := len(validatorBytes) / common.AddressLength
 	validators := []common.Address{}
 	for i := 0; i < proposedCount; i++ {
-		validators = append(validators, common.BytesToAddress(validatorbytes[i*common.AddressLength:(i+1)*common.AddressLength]))
+		validators = append(validators, common.BytesToAddress(validatorBytes[i*common.AddressLength:(i+1)*common.AddressLength]))
 	}
 
 	if len(dnr.Validators) != len(validators) {
@@ -175,7 +176,9 @@ func (s *Snapshot) inturn(number uint64, signer common.Address) bool {
 }
 
 // signers retrieves the list of authorized signers in ascending order.
-func (s *Snapshot) updateEpoch(epoch uint64, signers map[common.Address]bool) {
+func (s *Snapshot) updateEpoch(header *types.Header, epoch uint64, signers map[common.Address]bool) {
+	s.Number = header.Number.Uint64()
+	s.Hash = header.Hash()
 	s.Signers = signers
 	s.EpochNumber = epoch
 }

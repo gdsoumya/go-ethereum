@@ -22,7 +22,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/ethereum/go-ethereum/consensus/clique/dnr"
 	"io"
 	"math/big"
 	"math/rand"
@@ -48,7 +47,6 @@ import (
 )
 
 const (
-	checkpointInterval = 1024 // Number of blocks after which to save the vote snapshot to the database
 	inmemorySnapshots  = 128  // Number of recent vote snapshots to keep in memory
 	inmemorySignatures = 4096 // Number of recent block signatures to keep in memory
 
@@ -156,9 +154,9 @@ func ecrecover(header *types.Header, sigcache *lru.ARCCache) (common.Address, er
 type Clique struct {
 	config     *params.CliqueConfig // Consensus engine configuration parameters
 	db         ethdb.Database       // Database to store and retrieve snapshot checkpoints
-	dnr        *dnr.DNR
-	recents    *lru.ARCCache // Snapshots for recent block to speed up reorgs
-	signatures *lru.ARCCache // Signatures of recent blocks to speed up mining
+	dnr        *DNR                 // dnr watcher
+	recents    *lru.ARCCache        // Snapshots for recent block to speed up reorgs
+	signatures *lru.ARCCache        // Signatures of recent blocks to speed up mining
 
 	signer common.Address // Ethereum address of the signing key
 	signFn SignerFn       // Signer function to authorize hashes with
@@ -177,7 +175,7 @@ func New(config *params.CliqueConfig, db ethdb.Database) *Clique {
 	recents, _ := lru.NewARC(inmemorySnapshots)
 	signatures, _ := lru.NewARC(inmemorySignatures)
 
-	dnrInstance := dnr.NewDNR(&conf, db)
+	dnrInstance := NewDNR(&conf, db)
 	// start watch to monitor events
 	go dnrInstance.Watch(context.Background(), db)
 
@@ -325,6 +323,7 @@ func (c *Clique) verifyCascadingFields(chain consensus.ChainHeaderReader, header
 	if err != nil {
 		return err
 	}
+	log.Info(" verifying block...", "snap", snap, "parent_number", number-1, "epoch", epoch)
 	// If the block is a checkpoint block, verify the signer list
 	var (
 		validators = map[common.Address]bool{}
@@ -345,7 +344,7 @@ func (c *Clique) verifyCascadingFields(chain consensus.ChainHeaderReader, header
 	}
 
 	if epoch {
-		snap.updateEpoch(epochNum, validators)
+		snap.updateEpoch(header, epochNum, validators)
 		return snap.store(c.db)
 	}
 
@@ -359,10 +358,18 @@ func (c *Clique) snapshot(chain consensus.ChainHeaderReader, number uint64, hash
 		headers []*types.Header
 		snap    *Snapshot
 	)
+
+	log.Warn("cache", "keys", c.recents.Keys())
+	for _, key := range c.recents.Keys() {
+		s, ok := c.recents.Get(key)
+		log.Warn("cache value", "key", key, "value", s, "ok", ok)
+	}
 	for snap == nil {
 		// If an in-memory snapshot was found, use that
-		if s, ok := c.recents.Get(hash); ok {
-			snap = s.(*Snapshot)
+		if s, ok := c.recents.Get(hash.Hex()); ok {
+			sn := s.(Snapshot)
+			snap = &sn
+			log.Info("loading snapshot from cache", "block", number, "hash", hash, "snap", snap)
 			break
 		}
 		checkpoint := chain.GetHeaderByNumber(number)
@@ -373,8 +380,8 @@ func (c *Clique) snapshot(chain consensus.ChainHeaderReader, number uint64, hash
 
 		// If an on-disk checkpoint snapshot can be found, use that
 		if epoch {
-			if s, err := loadSnapshot(c.config, c.signatures, c.db, hash); err == nil {
-				log.Trace("Loaded voting snapshot from disk", "number", number, "hash", hash)
+			if s, err := loadSnapshot(c.config, c.signatures, c.db, number); err == nil {
+				log.Warn("Loaded voting snapshot from disk", "block", number, "hash", hash, "snap", snap)
 				snap = s
 				break
 			}
@@ -386,15 +393,15 @@ func (c *Clique) snapshot(chain consensus.ChainHeaderReader, number uint64, hash
 		if number == 0 || (epoch && (len(headers) > params.FullImmutabilityThreshold || chain.GetHeaderByNumber(number-1) == nil)) {
 			if checkpoint != nil {
 				hash := checkpoint.Hash()
-				dnrInstance, err := dnr.GetDNR(c.db, checkpoint.Nonce.Uint64())
+				dnrInstance, err := GetDNR(c.db, checkpoint.Nonce.Uint64())
 				if err != nil {
 					return nil, fmt.Errorf("failed to get dnr from db, error=%w", err)
 				}
-				snap = newSnapshot(c.config, c.signatures, dnrInstance.LastEpochBlock, number, hash, dnrInstance.Validators)
+				snap = newSnapshot(c.config, c.signatures, number, dnrInstance.LastEpochBlock, hash, dnrInstance.Validators)
 				if err := snap.store(c.db); err != nil {
 					return nil, err
 				}
-				log.Info("Stored checkpoint snapshot to disk", "number", number, "hash", hash)
+				log.Info("stored first snapshot to disk", "number", number, "hash", hash, "snap", snap)
 				break
 			}
 		}
@@ -417,7 +424,7 @@ func (c *Clique) snapshot(chain consensus.ChainHeaderReader, number uint64, hash
 		headers = append(headers, header)
 		number, hash = number-1, header.ParentHash
 	}
-	c.recents.Add(snap.Hash, snap)
+	c.recents.Add(snap.Hash.Hex(), *snap)
 	return snap, nil
 }
 
@@ -457,6 +464,7 @@ func (c *Clique) verifySeal(snap *Snapshot, header *types.Header, parents []*typ
 		}
 	}
 	// Ensure that the difficulty corresponds to the turn-ness of the signer
+	log.Info("turn_check", "block", header.Number.Uint64(), "signers", snap.signers(), "block-signer", signer, "difficulty", header.Difficulty.Uint64())
 	if !c.fakeDiff {
 		inturn := snap.inturn(header.Number.Uint64(), signer)
 		if inturn && header.Difficulty.Cmp(diffInTurn) != 0 {
@@ -485,7 +493,7 @@ func (c *Clique) Prepare(chain consensus.ChainHeaderReader, header *types.Header
 	}
 
 	// Set the correct difficulty
-	header.Difficulty = calcDifficulty(snap, c.signer)
+	header.Difficulty = calcDifficulty(snap, number, c.signer)
 
 	// Ensure the extra data has all its components
 	if len(header.Extra) < extraVanity {
@@ -493,16 +501,19 @@ func (c *Clique) Prepare(chain consensus.ChainHeaderReader, header *types.Header
 	}
 	header.Extra = header.Extra[:extraVanity]
 
-	dnrInstance, err := dnr.GetLatestDNR(c.db)
+	dnrInstance, err := GetLatestDNR(c.db)
 	if err != nil {
 		return err
 	}
 
 	if snap.EpochNumber < dnrInstance.LastEpochBlock {
+		log.Info("proposing epoch...", "last_epoch", snap.EpochNumber, "dnr_epoch", dnrInstance.LastEpochBlock)
 		for signer := range dnrInstance.Validators {
 			header.Extra = append(header.Extra, signer[:]...)
 		}
 		header.Nonce = types.EncodeNonce(dnrInstance.LastEpochBlock)
+	} else {
+		log.Info("no epoch...", "last_epoch", snap.EpochNumber, "dnr_epoch", dnrInstance.LastEpochBlock)
 	}
 	header.Extra = append(header.Extra, make([]byte, extraSeal)...)
 
@@ -613,6 +624,19 @@ func (c *Clique) Seal(chain consensus.ChainHeaderReader, block *types.Block, res
 
 		select {
 		case results <- block.WithSeal(header):
+			if !bytes.Equal(header.Nonce[:], nonceDropVote) {
+				dnrInstance, err := GetDNR(c.db, header.Nonce.Uint64())
+				if err = snap.store(c.db); err != nil {
+					log.Warn("failed to get dnr from db (sealing)", "error", err)
+					return
+				}
+				snap.updateEpoch(header, dnrInstance.LastEpochBlock, dnrInstance.Validators)
+				if err = snap.store(c.db); err != nil {
+					log.Warn("failed to update snapshot", "error", err)
+					return
+				}
+				log.Info("epoch stored", "header_no,", header.Number.Uint64(), "hash", header.Hash())
+			}
 		default:
 			log.Warn("Sealing result is not read by miner", "sealhash", SealHash(header))
 		}
@@ -630,11 +654,11 @@ func (c *Clique) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, 
 	if err != nil {
 		return nil
 	}
-	return calcDifficulty(snap, c.signer)
+	return calcDifficulty(snap, parent.Number.Uint64()+1, c.signer)
 }
 
-func calcDifficulty(snap *Snapshot, signer common.Address) *big.Int {
-	if snap.inturn(snap.Number+1, signer) {
+func calcDifficulty(snap *Snapshot, currentBlockNumber uint64, signer common.Address) *big.Int {
+	if snap.inturn(currentBlockNumber, signer) {
 		return new(big.Int).Set(diffInTurn)
 	}
 	return new(big.Int).Set(diffNoTurn)
