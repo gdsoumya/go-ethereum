@@ -17,6 +17,7 @@
 package clique
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -99,6 +100,14 @@ type status struct {
 	NumBlocks     uint64                 `json:"numBlocks"`
 }
 
+type epochPerformance struct {
+	InturnPercent float64                `json:"inturnPercent"`
+	SigningStatus map[common.Address]int `json:"sealerActivity"`
+	NumBlocks     uint64                 `json:"numBlocks"`
+	NextEpoch     uint64                 `json:"nextEpoch"`
+	StartBlock    uint64                 `json:"startBlock"`
+}
+
 // Status returns the status of the last N blocks,
 // - the number of active signers,
 // - the number of signers,
@@ -146,6 +155,68 @@ func (api *API) Status() (*status, error) {
 		InturnPercent: float64(100*optimals) / float64(numBlocks),
 		SigningStatus: signStatus,
 		NumBlocks:     numBlocks,
+	}, nil
+}
+
+// EpochPerformance returns the status in epoch epochNumber,
+// - the number of active signers,
+// - the number of signers,
+// - the percentage of in-turn blocks
+func (api *API) EpochPerformance(epochNumber, epochBlockNumber uint64) (*epochPerformance, error) {
+	var (
+		numBlocks = uint64(0)
+		header    = api.chain.CurrentHeader()
+		optimals  = 0
+	)
+	epochBlock := api.chain.GetHeaderByNumber(epochBlockNumber)
+	if epochBlock == nil {
+		return nil, fmt.Errorf("missing epoch block %d", epochBlockNumber)
+	}
+	snap, err := api.clique.snapshot(api.chain, epochBlockNumber, epochBlock.Hash(), nil)
+	if err != nil {
+		return nil, err
+	}
+	if snap.EpochNumber != epochNumber {
+		return nil, fmt.Errorf("epoch number mismatch, expected=%v got=%v", epochNumber, snap.EpochNumber)
+	}
+	var (
+		signers = snap.signers()
+		end     = header.Number.Uint64()
+		start   = epochBlockNumber + 1
+	)
+	signStatus := make(map[common.Address]int)
+	for _, s := range signers {
+		signStatus[s] = 0
+	}
+	nextEpoch := uint64(0)
+	n := start
+	for ; n <= end; n++ {
+		h := api.chain.GetHeaderByNumber(n)
+		if h == nil {
+			return nil, fmt.Errorf("missing block %d", n)
+		}
+		numBlocks++
+
+		if h.Difficulty.Cmp(diffInTurn) == 0 {
+			optimals++
+		}
+		sealer, err := api.clique.Author(h)
+		if err != nil {
+			return nil, err
+		}
+		signStatus[sealer]++
+
+		if !bytes.Equal(h.Nonce[:], nonceDropVote) {
+			nextEpoch = h.Nonce.Uint64()
+			break
+		}
+	}
+	return &epochPerformance{
+		InturnPercent: float64(100*optimals) / float64(numBlocks),
+		SigningStatus: signStatus,
+		NumBlocks:     numBlocks,
+		NextEpoch:     nextEpoch,
+		StartBlock:    start,
 	}, nil
 }
 

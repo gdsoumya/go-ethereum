@@ -397,7 +397,7 @@ func (c *Clique) snapshot(chain consensus.ChainHeaderReader, number uint64, hash
 				if err != nil {
 					return nil, fmt.Errorf("failed to get dnr from db, error=%w", err)
 				}
-				snap = newSnapshot(c.config, c.signatures, number, dnrInstance.LastEpochBlock, hash, dnrInstance.Validators)
+				snap = newSnapshot(c.config, c.signatures, number, dnrInstance.LastEpochBlock, nil, hash, nil, dnrInstance.Validators)
 				if err := snap.store(c.db); err != nil {
 					return nil, err
 				}
