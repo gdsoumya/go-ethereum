@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: renchain-node
+  namespace: renchain
+  labels:
+    app: renchain-node
+spec:
+  replicas: 3
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: renchain-node
+  template:
+    metadata:
+      labels:
+        app: renchain-node
+    spec:
+      containers:
+        - name: node
+          image: gdsoumya/renchain:latest
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh"]
+          args:
+            - "-c"
+            - "geth --bootnodes=`cat /root/.ethereum/bootnodes` --mine --networkid=${NETWORK_ID} --syncmode 'full' --http --http.addr '0.0.0.0' --http.corsdomain '*' --http.api 'personal,clique,eth,net,web3,txpool,miner,admin' --miner.gasprice '1' --mine"
+          env:
+            - name: NETWORK_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: genesis
+                  key: networkid
+          ports:
+            - name: discovery-udp
+              containerPort: 30303
+              protocol: UDP
+            - name: discovery-tcp
+              containerPort: 30303
+          volumeMounts:
+            - name: data
+              mountPath: /root/.ethereum
+      initContainers:
+        - name: init-genesis
+          image: gdsoumya/renchain:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - "init"
+            - "/var/geth/genesis.json"
+          volumeMounts:
+            - name: data
+              mountPath: /root/.ethereum
+            - name: config
+              mountPath: /var/geth
+        - name: create-account
+          image: ethereum/client-go:release-1.8
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh"]
+          args:
+            - "-c"
+            - "printf '$(ACCOUNT_SECRET)\n$(ACCOUNT_SECRET)\n' | geth account new"
+          env:
+            - name: ACCOUNT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: node-passwd
+                  key: accountsecret
+          volumeMounts:
+            - name: data
+              mountPath: /root/.ethereum
+        - name: get-bootnodes
+          image: gdsoumya/renchain:latest
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh"]
+          args:
+            - "-c"
+            - | 
+              apk add --no-cache curl; CNT=0; 
+              echo "retreiving bootnodes from $BOOTNODE_REGISTRAR_SVC";
+              while [ $CNT -le 90 ]
+              do
+                curl -m 5 -s $BOOTNODE_REGISTRAR_SVC | xargs echo -n >> /geth/bootnodes;
+                if [ -s /geth/bootnodes ]
+                then
+                  cat /geth/bootnodes;
+                  exit 0;
+                fi;
+                echo "no bootnodes found. retrying $CNT...";
+                sleep 2 || break;
+                CNT=$((CNT+1));
+              done;
+              echo "WARNING. unable to find bootnodes. continuing but geth may not be able to find any peers.";
+              exit 0;
+          env:
+            - name: BOOTNODE_REGISTRAR_SVC
+              value: bootnode-registrar
+          volumeMounts:
+            - name: data
+              mountPath: /geth
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: genesis

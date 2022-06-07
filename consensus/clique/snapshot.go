@@ -50,11 +50,13 @@ type Snapshot struct {
 	config   *params.CliqueConfig // Consensus engine parameters to fine tune behavior
 	sigcache *lru.ARCCache        // Cache of recent block signatures to speed up ecrecover
 
-	Number      uint64                    `json:"number"`  // Block number where the snapshot was created
-	EpochNumber uint64                    `json:"epoch"`   // dnr epoch when snapshot was created
-	Hash        common.Hash               `json:"hash"`    // Block hash where the snapshot was created
-	Signers     map[common.Address]bool   `json:"signers"` // Set of authorized signers at this moment
-	Recents     map[uint64]common.Address `json:"recents"` // Set of recent signers for spam protections
+	Number             uint64                    `json:"number"`                       // Block number where the snapshot was created
+	PreviousSnapNumber *uint64                   `json:"previousSnapNumber,omitempty"` // previous snap block number
+	PreviousSnapHash   *common.Hash              `json:"previousSnapHash,omitempty"`   // previous snap block hash
+	EpochNumber        uint64                    `json:"epoch"`                        // dnr epoch when snapshot was created
+	Hash               common.Hash               `json:"hash"`                         // Block hash where the snapshot was created
+	Signers            map[common.Address]bool   `json:"signers"`                      // Set of authorized signers at this moment
+	Recents            map[uint64]common.Address `json:"recents"`                      // Set of recent signers for spam protections
 }
 
 // signersAscending implements the sort interface to allow sorting a list of addresses
@@ -67,15 +69,17 @@ func (s signersAscending) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 // newSnapshot creates a new snapshot with the specified startup parameters. This
 // method does not initialize the set of recent signers, so only ever use if for
 // the genesis block.
-func newSnapshot(config *params.CliqueConfig, sigcache *lru.ARCCache, number, epoch uint64, hash common.Hash, signers map[common.Address]bool) *Snapshot {
+func newSnapshot(config *params.CliqueConfig, sigcache *lru.ARCCache, number, epoch uint64, previousNumber *uint64, hash common.Hash, previousHash *common.Hash, signers map[common.Address]bool) *Snapshot {
 	snap := &Snapshot{
-		config:      config,
-		sigcache:    sigcache,
-		Number:      number,
-		Hash:        hash,
-		EpochNumber: epoch,
-		Signers:     signers,
-		Recents:     make(map[uint64]common.Address),
+		config:             config,
+		sigcache:           sigcache,
+		Number:             number,
+		Hash:               hash,
+		EpochNumber:        epoch,
+		Signers:            signers,
+		Recents:            make(map[uint64]common.Address),
+		PreviousSnapHash:   previousHash,
+		PreviousSnapNumber: previousNumber,
 	}
 	return snap
 }
@@ -177,6 +181,9 @@ func (s *Snapshot) inturn(number uint64, signer common.Address) bool {
 
 // signers retrieves the list of authorized signers in ascending order.
 func (s *Snapshot) updateEpoch(header *types.Header, epoch uint64, signers map[common.Address]bool) {
+	x, y := s.Number, s.Hash
+	s.PreviousSnapNumber = &x
+	s.PreviousSnapHash = &y
 	s.Number = header.Number.Uint64()
 	s.Hash = header.Hash()
 	s.Signers = signers

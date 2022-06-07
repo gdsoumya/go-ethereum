@@ -128,7 +128,7 @@ func (d *DNR) Watch(ctx context.Context, db ethdb.Database) {
 
 		lastBlock = lastBlockNumber.Uint64()
 
-		time.Sleep(time.Minute)
+		time.Sleep(time.Second * 30)
 	}
 }
 
