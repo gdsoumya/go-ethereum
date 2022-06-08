@@ -1,12 +1,13 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: renchain-node
   namespace: renchain
   labels:
     app: renchain-node
 spec:
-  replicas: 3
+  serviceName: "renchain-node"
+  replicas: 50
   revisionHistoryLimit: 1
   selector:
     matchLabels:
@@ -23,7 +24,7 @@ spec:
           command: ["/bin/sh"]
           args:
             - "-c"
-            - "geth --bootnodes=`cat /root/.ethereum/bootnodes` --mine --networkid=${NETWORK_ID} --syncmode 'full' --http --http.addr '0.0.0.0' --http.corsdomain '*' --http.api 'personal,clique,eth,net,web3,txpool,miner,admin' --miner.gasprice '1' --mine"
+            - "geth --bootnodes=`cat /root/.ethereum/bootnodes` --mine --networkid=${NETWORK_ID} --syncmode 'full' --http --http.addr '0.0.0.0' --http.corsdomain '*' --http.api 'personal,clique,eth,net,web3,txpool,miner,admin' --miner.gasprice '1' --mine --allow-insecure-unlock -unlock 0 --password /key/accountsecret"
           env:
             - name: NETWORK_ID
               valueFrom:
@@ -39,6 +40,8 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /root/.ethereum
+            - name: node-passwd
+              mountPath: /key/
       initContainers:
         - name: init-genesis
           image: gdsoumya/renchain:latest
@@ -57,7 +60,9 @@ spec:
           command: ["/bin/sh"]
           args:
             - "-c"
-            - "printf '$(ACCOUNT_SECRET)\n$(ACCOUNT_SECRET)\n' | geth account new"
+            - |
+              if [ ! -z "$(geth --verbosity 0 account list)" ]; then echo 'already present'; else  printf '$(ACCOUNT_SECRET)\n$(ACCOUNT_SECRET)\n' | geth account new; fi;
+              geth --verbosity 0 account list;
           env:
             - name: ACCOUNT_SECRET
               valueFrom:
@@ -76,6 +81,7 @@ spec:
             - | 
               apk add --no-cache curl; CNT=0; 
               echo "retreiving bootnodes from $BOOTNODE_REGISTRAR_SVC";
+              rm -rf /geth/bootnodes;
               while [ $CNT -le 90 ]
               do
                 curl -m 5 -s $BOOTNODE_REGISTRAR_SVC | xargs echo -n >> /geth/bootnodes;
@@ -97,8 +103,17 @@ spec:
             - name: data
               mountPath: /geth
       volumes:
-        - name: data
-          emptyDir: {}
         - name: config
           configMap:
             name: genesis
+        - name: node-passwd
+          secret:
+            secretName: node-passwd
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 2Gi

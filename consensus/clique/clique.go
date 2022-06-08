@@ -359,7 +359,8 @@ func (c *Clique) snapshot(chain consensus.ChainHeaderReader, number uint64, hash
 		snap    *Snapshot
 	)
 
-	log.Warn("cache", "keys", c.recents.Keys())
+	log.Warn("retrieving snapshot", "requested_block", number, "requested_hash", hash)
+	log.Warn("cache check", "keys", c.recents.Keys())
 	for _, key := range c.recents.Keys() {
 		s, ok := c.recents.Get(key)
 		log.Warn("cache value", "key", key, "value", s, "ok", ok)
@@ -384,6 +385,8 @@ func (c *Clique) snapshot(chain consensus.ChainHeaderReader, number uint64, hash
 				log.Warn("Loaded voting snapshot from disk", "block", number, "hash", hash, "snap", snap)
 				snap = s
 				break
+			} else {
+				log.Error("epoch detected for block but error getting snap", "block", number, "hash", hash, "err", err)
 			}
 		}
 		// If we're at the genesis, snapshot the initial state. Alternatively if we're

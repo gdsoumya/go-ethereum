@@ -66,7 +66,7 @@ func (d *DNR) Watch(ctx context.Context, db ethdb.Database) {
 
 	for {
 		startBlockNumber := new(big.Int).SetUint64(lastBlock + 1)
-		lastBlockNumber := new(big.Int).Add(startBlockNumber, big.NewInt(1000))
+		lastBlockNumber := new(big.Int).Add(startBlockNumber, big.NewInt(2000))
 
 		latestBlock, err := client.BlockByNumber(ctx, nil)
 		if err != nil {

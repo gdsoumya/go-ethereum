@@ -182,7 +182,7 @@ func (api *API) EpochPerformance(epochNumber, epochBlockNumber uint64) (*epochPe
 	var (
 		signers = snap.signers()
 		end     = header.Number.Uint64()
-		start   = epochBlockNumber + 1
+		start   = snap.Number + 1
 	)
 	signStatus := make(map[common.Address]int)
 	for _, s := range signers {
