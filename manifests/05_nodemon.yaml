@@ -1,0 +1,72 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: renchain-nodemon
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/exec]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: renchain-nodemon
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: renchain-nodemon
+subjects:
+  - kind: ServiceAccount
+    name: renchain-nodemon
+    namespace: renchain
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: renchain-nodemon
+  namespace: renchain
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: renchain-nodemon
+  namespace: renchain
+  labels:
+    app: renchain-nodemon
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: renchain-nodemon
+  template:
+    metadata:
+      labels:
+        app: renchain-nodemon
+    spec:
+      serviceAccountName: renchain-nodemon
+      containers:
+        - name: node
+          image: gdsoumya/nodemon:latest
+          imagePullPolicy: Always
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: server
+              containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: renchain
+  name: renchain-nodemon
+  labels:
+    app: renchain-nodemon
+spec:
+  selector:
+    app: renchain-nodemon
+  ports:
+    - name: http
+      port: 8080

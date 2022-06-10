@@ -7,7 +7,7 @@ metadata:
     app: renchain-node
 spec:
   serviceName: "renchain-node"
-  replicas: 50
+  replicas: 150
   revisionHistoryLimit: 1
   selector:
     matchLabels:
